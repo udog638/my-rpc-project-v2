@@ -1,0 +1,69 @@
+#pragma once
+#include <string>
+#include <stdint.h>
+
+namespace myrpc
+{
+
+    struct RpcHeader
+    {
+        uint32_t magic_number;   // 魔数，用来校验这是不是一个合法的 RPC 消息
+        uint32_t message_length; // 消息体长度(不含header)
+        uint32_t sequence_id;    // 序列号，用来匹配请求和响应
+
+        static const uint32_t MAGIC;
+    };
+
+    class RpcMessage
+    {
+    public:
+        virtual ~RpcMessage() = default;
+        virtual bool Serialize(std::string &out) const = 0;
+        virtual bool Deserialize(const std::string &in) = 0;
+        uint32_t getSequenceId() const { return sequence_id_; }
+        void setSequenceId(uint32_t sequence_id) { sequence_id_ = sequence_id; }
+
+    protected:
+        uint32_t sequence_id_ = 0;
+    };
+
+    class RpcRequest : public RpcMessage
+    {
+    public:
+        void setPayload(const std::string &payload) { payload_ = payload; }
+        void setServiceName(const std::string &service_name) { service_name_ = service_name; }
+        void setMethodName(const std::string &method_name) { method_name_ = method_name; }
+        const std::string &getPayload() const { return payload_; }
+        const std::string &getServiceName() const { return service_name_; }
+        const std::string &getMethodName() const { return method_name_; }
+
+        bool Serialize(std::string &out) const override;
+        bool Deserialize(const std::string &in) override;
+
+    private:
+        std::string service_name_;
+        std::string method_name_;
+        std::string payload_;
+    };
+
+    class RpcResponse : public RpcMessage
+    {
+    public:
+        bool Serialize(std::string &out) const override;
+        bool Deserialize(const std::string &in) override;
+
+        const std::string &getResultData() const { return result_data_; }
+        const std::string &getErrorMessage() const { return error_message_; }
+        uint32_t getErrorCode() const { return error_code_; }
+
+        void setResultData(const std::string &result_data) { result_data_ = result_data; }
+        void setErrorMessage(const std::string &error_message) { error_message_ = error_message; }
+        void setErrorCode(uint32_t error_code) { error_code_ = error_code; }
+
+    private:
+        std::string result_data_;
+        std::string error_message_;
+        uint32_t error_code_ = 0;
+    };
+
+} // namespace myrpc
