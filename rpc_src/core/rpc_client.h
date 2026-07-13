@@ -13,8 +13,8 @@
 namespace myrpc
 {
 
-    // 简化版 RPC 客户端：直接用 ip:port 连接 server。
-    // 服务发现留给 zk 模块打通后再接入(把 Connect() 里的地址来源换成 ZkConnHandler 即可)
+    // RPC 客户端：启动时向 zk 注册中心查询 RpcService 的可用地址列表，
+    // 用负载均衡器(random/round/weight，由 server 端配置的 load_balance_strategy 决定)选一台连接
     class RpcClient
     {
     public:
@@ -56,14 +56,7 @@ namespace myrpc
             rpc_request.setPayload(payload);
             rpc_request.setSequenceId(GenerateSequenceId());
 
-            std::string serialized_request;
-            if (!rpc_request.Serialize(serialized_request))
-            {
-                LOG_ERROR("RpcRequest serialize failed");
-                return false;
-            }
-
-            if (!connection_->Write(serialized_request))
+            if (!connection_->Write(rpc_request))
             {
                 LOG_ERROR("Failed to send request");
                 is_connected_ = false;
@@ -131,6 +124,7 @@ namespace myrpc
         int server_port_ = 0;
         int timeout_ms_ = 3000;
         int retry_times_ = 3;
+        std::string zk_namespace_;
 
         std::shared_ptr<Connection> connection_;
         std::mutex mutex_;

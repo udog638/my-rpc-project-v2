@@ -1,4 +1,6 @@
 #include "rpc_server_config.h"
+#include "zk_conn_handler.h"
+#include "load_balancer.h"
 #include <fstream>
 
 namespace myrpc
@@ -45,7 +47,27 @@ namespace myrpc
                 }
             }
 
-            // scheduler(zk) / load_balance_strategy 解析留给 zk 注册和负载均衡模块时再加
+            // 初始化 zk 连接(zookeeper 服务注册/发现)
+            if (config.contains("scheduler"))
+            {
+                auto &zk_conn_handler = ZkConnHandler::GetInstance();
+                if (!zk_conn_handler.initZkConnHandler(config["scheduler"]))
+                {
+                    LOG_ERROR("Failed to initialize zk conn handler");
+                    return false;
+                }
+            }
+
+            // 初始化负载均衡器(random/round/weight)
+            if (config.contains("load_balance_strategy"))
+            {
+                std::string strategy = config["load_balance_strategy"];
+                if (!LoadBalancer::initBalancer(strategy))
+                {
+                    LOG_ERROR("Failed to initialize load balancer with strategy: {}", strategy);
+                    return false;
+                }
+            }
 
             return true;
         }

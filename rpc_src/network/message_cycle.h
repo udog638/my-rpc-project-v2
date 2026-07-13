@@ -29,8 +29,10 @@ namespace myrpc
         void HandleClientData(int fd);
         void RemoveConnection(int fd);
 
-        // 收到一条完整的 RpcRequest 后，交给 ServiceManager 处理并把 RpcResponse 写回去
+        // 收到一条完整的 RpcRequest 后，交给线程池异步处理(避免阻塞 epoll 主循环)，
+        // 处理完在线程池的工作线程里把 RpcResponse 写回去
         void HandleRpcRequest(const std::shared_ptr<Connection> &conn, const RpcRequest &request);
+        void HandleRpcRequestSync(const std::shared_ptr<Connection> &conn, const RpcRequest &request);
         void SendErrorResponse(const std::shared_ptr<Connection> &conn, uint32_t sequence_id,
                                 uint32_t error_code, const std::string &error_message);
 

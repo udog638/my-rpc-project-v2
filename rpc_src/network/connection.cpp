@@ -1,6 +1,9 @@
 #include "connection.h"
+#include "zstd_compress.h"
+#include "aes_encrypt.h"
 #include <unistd.h>
 #include <sys/select.h>
+#include <arpa/inet.h>
 #include <errno.h>
 #include <cstring>
 
@@ -98,29 +101,61 @@ namespace myrpc
 
     Connection::FrameStatus Connection::ExtractFrame(std::string &frame_out)
     {
-        if (read_buffer_.size() < sizeof(RpcHeader))
+        // 线路上的帧格式：4 字节长度前缀(网络字节序) + 密文
+        // 密文解密 -> 解压后，才是真正的 RpcHeader + RpcRequest/RpcResponse 数据
+        if (read_buffer_.size() < sizeof(uint32_t))
         {
             return FrameStatus::kIncomplete;
         }
 
-        RpcHeader header;
-        std::memcpy(&header, read_buffer_.data(), sizeof(header));
+        uint32_t net_len;
+        std::memcpy(&net_len, read_buffer_.data(), sizeof(net_len));
+        uint32_t cipher_len = ntohl(net_len);
 
+        if (cipher_len > MAX_FRAME_SIZE)
+        {
+            LOG_ERROR("frame too large: {} bytes, fd: {}", cipher_len, fd_);
+            return FrameStatus::kError;
+        }
+
+        size_t total_len = sizeof(uint32_t) + cipher_len;
+        if (read_buffer_.size() < total_len)
+        {
+            return FrameStatus::kIncomplete; // 半包，等待更多数据
+        }
+
+        std::string ciphertext(read_buffer_.begin() + sizeof(uint32_t), read_buffer_.begin() + total_len);
+        read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + total_len);
+
+        std::string decrypted;
+        if (!AesEncrypt::getInstance().Decrypt(ciphertext, decrypted))
+        {
+            LOG_ERROR("Failed to decrypt frame, fd: {}", fd_);
+            return FrameStatus::kError;
+        }
+
+        std::string decompressed;
+        if (!ZstdCompress::getInstance().DecompressString(decrypted, decompressed))
+        {
+            LOG_ERROR("Failed to decompress frame, fd: {}", fd_);
+            return FrameStatus::kError;
+        }
+
+        if (decompressed.size() < sizeof(RpcHeader))
+        {
+            LOG_ERROR("decompressed frame too small, fd: {}", fd_);
+            return FrameStatus::kError;
+        }
+
+        RpcHeader header;
+        std::memcpy(&header, decompressed.data(), sizeof(header));
         if (header.magic_number != RpcHeader::MAGIC)
         {
             LOG_ERROR("Invalid magic number: {:#x}, fd: {}", header.magic_number, fd_);
             return FrameStatus::kError;
         }
 
-        size_t frame_size = sizeof(RpcHeader) + header.message_length;
-        if (read_buffer_.size() < frame_size)
-        {
-            return FrameStatus::kIncomplete; // 半包，等待更多数据
-        }
-
-        frame_out.assign(read_buffer_.begin(), read_buffer_.begin() + frame_size);
-        read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + frame_size);
-
+        frame_out = std::move(decompressed);
         return FrameStatus::kComplete;
     }
 
@@ -150,6 +185,31 @@ namespace myrpc
         return true;
     }
 
+    bool Connection::WriteFrame(const std::string &data)
+    {
+        std::string compressed;
+        if (!ZstdCompress::getInstance().CompressString(data, compressed))
+        {
+            LOG_ERROR("Failed to compress frame, fd: {}", fd_);
+            return false;
+        }
+
+        std::string encrypted;
+        if (!AesEncrypt::getInstance().Encrypt(compressed, encrypted))
+        {
+            LOG_ERROR("Failed to encrypt frame, fd: {}", fd_);
+            return false;
+        }
+
+        uint32_t net_len = htonl(static_cast<uint32_t>(encrypted.size()));
+        std::string wire;
+        wire.resize(sizeof(net_len));
+        std::memcpy(&wire[0], &net_len, sizeof(net_len));
+        wire += encrypted;
+
+        return Write(wire);
+    }
+
     bool Connection::Write(const RpcResponse &response)
     {
         std::string serialized;
@@ -158,7 +218,7 @@ namespace myrpc
             LOG_ERROR("Failed to serialize response, fd: {}", fd_);
             return false;
         }
-        return Write(serialized);
+        return WriteFrame(serialized);
     }
 
     bool Connection::Write(const RpcRequest &request)
@@ -169,7 +229,7 @@ namespace myrpc
             LOG_ERROR("Failed to serialize request, fd: {}", fd_);
             return false;
         }
-        return Write(serialized);
+        return WriteFrame(serialized);
     }
 
     void Connection::Close()

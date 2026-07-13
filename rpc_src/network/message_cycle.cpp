@@ -1,6 +1,7 @@
 #include "message_cycle.h"
 #include "service_manager.h"
 #include "error_code.h"
+#include "thread_pool_singleton.h"
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -92,6 +93,23 @@ namespace myrpc
     }
 
     void MessageCycle::HandleRpcRequest(const std::shared_ptr<Connection> &conn, const RpcRequest &request)
+    {
+        // 确保线程池已经初始化(demo/单测场景下 servers_main 可能没先 init)
+        if (!meeting_ctrl::ThreadPoolSingleton::exists())
+        {
+            meeting_ctrl::ThreadPoolSingleton::init(std::thread::hardware_concurrency());
+        }
+
+        // 把真正的业务处理丢给线程池，epoll 主线程只管收发字节，不被业务逻辑阻塞
+        meeting_ctrl::ThreadPoolSingleton::enqueue(
+            meeting_ctrl::TaskPriority::NORMAL,
+            [this, conn, request]()
+            {
+                HandleRpcRequestSync(conn, request);
+            });
+    }
+
+    void MessageCycle::HandleRpcRequestSync(const std::shared_ptr<Connection> &conn, const RpcRequest &request)
     {
         if (request.getServiceName().empty() || request.getMethodName().empty())
         {

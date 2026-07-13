@@ -5,6 +5,8 @@
 #include "message_cycle.h"
 #include "service_manager.h"
 #include "rpc_service.h"
+#include "thread_pool_singleton.h"
+#include "zk_conn_handler.h"
 #include <csignal>
 
 // server 入口：加载配置 -> 建监听socket -> 注册 RpcService -> 跑 epoll 事件循环
@@ -48,6 +50,24 @@ int main()
         return 1;
     }
 
+    // 向 zk 注册中心注册本机地址，client 端通过 ZkConnHandler::getServer() 发现它
+    auto registry_config = server_config.GetServiceRegistryConfig();
+    if (!myrpc::ZkConnHandler::GetInstance().registerServicesFromConfig(registry_config))
+    {
+        LOG_ERROR("向 zk 注册服务失败");
+        return 1;
+    }
+
+    auto thread_pool_config = server_config.GetThreadPoolConfig();
+    meeting_ctrl::ThreadPoolStruct pool_config;
+    pool_config.core_threads = thread_pool_config->GetCoreThreads();
+    pool_config.max_threads = thread_pool_config->GetMaxThreads();
+    pool_config.max_queue_size = thread_pool_config->GetQueueSize();
+    pool_config.keep_alive_time = std::chrono::seconds(thread_pool_config->GetKeepAliveTime());
+    meeting_ctrl::ThreadPoolSingleton::init(pool_config);
+    LOG_INFO("线程池初始化完成: core_threads={}, max_threads={}",
+             pool_config.core_threads, pool_config.max_threads);
+
     myrpc::MessageCycle message_cycle(&myrpc::ConnectionManager::GetInstance());
     if (!message_cycle.AddListenFd(socket_ptr->GetFd()))
     {
@@ -59,6 +79,12 @@ int main()
     LOG_INFO("RPC server 启动完成，监听 {}:{}",
              server_config.GetServersIp(), server_config.GetServersPort());
     message_cycle.Loop();
+
+    LOG_INFO("正在关闭线程池...");
+    meeting_ctrl::ThreadPoolSingleton::shutdown(std::chrono::seconds(10));
+
+    LOG_INFO("正在清理 zk 连接...");
+    myrpc::ZkConnHandler::GetInstance().cleanup();
 
     LOG_INFO("RPC server 已退出");
     return 0;
